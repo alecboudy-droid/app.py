@@ -10,7 +10,7 @@ st.set_page_config(page_title="Cabin App", layout="centered")
 
 # --- SETUP ---
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('gemini-flash-lite-latest', system_instruction=CABIN_INFO)
 
 # --- SHARED GOOGLE SHEETS CLIENT (cached so we don't re-auth every rerun) ---
 @st.cache_resource
