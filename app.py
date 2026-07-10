@@ -9,7 +9,7 @@ from datetime import datetime
 st.set_page_config(page_title="Cabin App", layout="centered")
 
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-model = genai.GenerativeModel('gemini-flash-latest')
+model = genai.GenerativeModel('gemini-flash-lite-latest')
 
 @st.cache_resource
 def get_client():
