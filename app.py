@@ -8,9 +8,11 @@ from datetime import datetime
 
 st.set_page_config(page_title="Cabin App", layout="centered")
 
+# --- SETUP ---
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-model = genai.GenerativeModel('gemini-flash-lite-latest')
+model = genai.GenerativeModel('gemini-pro')
 
+# --- SHARED GOOGLE SHEETS CLIENT (cached so we don't re-auth every rerun) ---
 @st.cache_resource
 def get_client():
     creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
@@ -36,7 +38,7 @@ def clear_dates():
 def is_overlapping(new_start, new_end):
     sheet = get_bookings_sheet()
     data = sheet.get_all_values()
-    for row in data[1:]:
+    for row in data[1:]:  # Skip header
         if len(row) >= 3:
             existing_start = datetime.strptime(row[1], '%Y-%m-%d').date()
             existing_end = datetime.strptime(row[2], '%Y-%m-%d').date()
@@ -48,6 +50,7 @@ def save_to_sheet(name, start, end):
     sheet = get_bookings_sheet()
     sheet.append_row([name, str(start), str(end)])
 
+# --- UI LAYOUT ---
 col1, col2, col3 = st.columns([1, 8, 1])
 
 with col2:
@@ -64,7 +67,8 @@ with col2:
     with tab2:
         st.subheader("Availability")
 
-        booking_data = get_bookings_sheet().get_all_values()[1:]
+        # Pull real bookings and turn them into red calendar events
+        booking_data = get_bookings_sheet().get_all_values()[1:]  # skip header
         booked_events = []
         for row in booking_data:
             if len(row) >= 3:
@@ -72,7 +76,7 @@ with col2:
                     "title": f"Booked: {row[0]}",
                     "start": row[1],
                     "end": row[2],
-                    "color": "#e74c3c"
+                    "color": "#e74c3c"  # red
                 })
 
         calendar(
@@ -88,6 +92,7 @@ with col2:
         st.subheader("Reserve Your Dates")
         user_name = st.text_input("Guest Name:")
 
+        # Date selection widget
         date_selection = st.date_input("Select range:", value=st.session_state.get("date_range", ()), key="date_range")
         st.button("Clear Dates", on_click=clear_dates)
 
@@ -120,7 +125,7 @@ with col2:
 
         st.divider()
 
-        rows = inventory_sheet.get_all_values()[1:]
+        rows = inventory_sheet.get_all_values()[1:]  # skip header row
 
         if not rows:
             st.write("Nothing on the list right now 🎉")
@@ -132,5 +137,5 @@ with col2:
                     st.write(f"🧻 {item_name}")
                 with c2:
                     if st.button("✅", key=f"check_{i}"):
-                        inventory_sheet.delete_rows(i + 2)
+                        inventory_sheet.delete_rows(i + 2)  # +2: row 1 is header, sheets are 1-indexed
                         st.rerun()
