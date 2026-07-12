@@ -123,6 +123,16 @@ Only include that BOOKING_READY line when you are fully ready to book and the da
 free. If the dates overlap an existing booking, do not include that line -- instead tell them it's
 unavailable and ask if they'd like different dates.
 
+3. CANCELLING: If someone wants to cancel a stay, find the matching entry in CURRENT BOOKINGS by
+name (and dates if they give them). If there's exactly one clear match, confirm with them briefly,
+then add this exact line as the very last line of your reply, with the real values from that
+matching booking:
+
+CANCEL_READY: name=<name from the booking>; start=<YYYY-MM-DD>; end=<YYYY-MM-DD>
+
+If you can't find a matching booking, or there are multiple bookings under that name and it's
+unclear which one they mean, ask a clarifying question instead and do not include that line.
+
 Keep all replies short, warm, and conversational.
 """
 
@@ -186,6 +196,17 @@ def save_to_sheet(name, start, end):
     sheet = get_bookings_sheet()
     sheet.append_row([name, str(start), str(end)])
 
+def cancel_booking(name, start_str, end_str):
+    """Finds a booking matching name+start+end exactly and deletes that row. Returns True if found."""
+    sheet = get_bookings_sheet()
+    data = sheet.get_all_values()
+    for i, row in enumerate(data[1:], start=2):  # start=2: row 1 is header, sheets are 1-indexed
+        if len(row) >= 3 and row[0].strip().lower() == name.strip().lower() \
+                and row[1] == start_str and row[2] == end_str:
+            sheet.delete_rows(i)
+            return True
+    return False
+
 def build_ai_context():
     today_str = datetime.today().strftime('%A, %B %d, %Y')
 
@@ -214,6 +235,19 @@ def extract_booking(reply_text):
         return None, reply_text
     name, start, end = match.groups()
     clean_text = BOOKING_PATTERN.sub("", reply_text).strip()
+    return (name.strip(), start.strip(), end.strip()), clean_text
+
+CANCEL_PATTERN = re.compile(
+    r"CANCEL_READY:\s*name=(.+?);\s*start=(\d{4}-\d{2}-\d{2});\s*end=(\d{4}-\d{2}-\d{2})",
+    re.IGNORECASE
+)
+
+def extract_cancellation(reply_text):
+    match = CANCEL_PATTERN.search(reply_text)
+    if not match:
+        return None, reply_text
+    name, start, end = match.groups()
+    clean_text = CANCEL_PATTERN.sub("", reply_text).strip()
     return (name.strip(), start.strip(), end.strip()), clean_text
 
 # --- UI LAYOUT ---
@@ -251,6 +285,7 @@ with tab1:
                 full_message = f"{SYSTEM_PROMPT}\n\n{context}\n\nUser: {user_input}"
                 response = st.session_state.gemini_chat.send_message(full_message)
                 booking, display_text = extract_booking(response.text)
+                cancellation, display_text = extract_cancellation(display_text)
 
                 if booking:
                     name, start_str, end_str = booking
@@ -262,6 +297,14 @@ with tab1:
                     else:
                         save_to_sheet(name, start, end)
                         display_text += f"\n\n✅ You're all set, {name}! Booked {start} to {end}."
+
+                if cancellation:
+                    name, start_str, end_str = cancellation
+                    found = cancel_booking(name, start_str, end_str)
+                    if found:
+                        display_text += f"\n\n✅ Cancelled {name}'s stay from {start_str} to {end_str}."
+                    else:
+                        display_text += "\n\n⚠️ I couldn't find that exact booking to cancel — could you double check the details?"
 
                 st.write(display_text)
                 st.session_state.chat_messages.append({"role": "assistant", "content": display_text})
@@ -312,6 +355,24 @@ with tab2:
                 save_to_sheet(user_name, start, end)
                 st.balloons()
                 st.success("Booking confirmed!")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="cabin-card">', unsafe_allow_html=True)
+    st.subheader("Current Bookings")
+
+    all_bookings = get_bookings_sheet().get_all_values()[1:]
+    if not all_bookings:
+        st.write("No bookings yet.")
+    else:
+        for i, row in enumerate(all_bookings):
+            if len(row) >= 3:
+                bc1, bc2 = st.columns([6, 1])
+                with bc1:
+                    st.write(f"**{row[0]}** — {row[1]} to {row[2]}")
+                with bc2:
+                    if st.button("❌", key=f"cancel_{i}"):
+                        get_bookings_sheet().delete_rows(i + 2)
+                        st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 with tab3:
