@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import gspread
 import json
+import re
 from google.oauth2.service_account import Credentials
 from streamlit_calendar import calendar
 from datetime import datetime
@@ -101,17 +102,28 @@ genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 model = genai.GenerativeModel('gemini-flash-lite-latest')
 
 SYSTEM_PROMPT = """
-You are a helpful assistant for a family cabin. Answer using the information provided below
-(today's date, general cabin info, and current bookings).
+You are a helpful booking assistant for a family cabin. Use the info below (today's date,
+cabin info, and current bookings) to help people.
 
-For availability questions: figure out the actual calendar dates being asked about (use TODAY'S
-DATE to resolve relative terms like "this weekend" or "next Friday"), then check them against
-the CURRENT BOOKINGS list. Give a direct, short answer:
-- If the dates are free: "Yes, you're clear to go up [dates] — nobody's booked it."
-- If the dates overlap a booking: "No, [name] already has the cabin booked [dates]."
+You can help in two ways:
 
-For anything else not covered below, say you don't have that info and suggest asking the
-family directly. Keep answers short, direct, and friendly.
+1. GENERAL QUESTIONS: Answer using the cabin info provided. For availability questions, resolve
+relative dates (e.g. "this weekend") using TODAY'S DATE, check against CURRENT BOOKINGS, and give
+a direct answer: "Yes, you're clear to go up [dates]" or "No, [name] already has it booked [dates]."
+
+2. BOOKING: If someone wants to book the cabin, collect exactly two things through natural
+conversation: their name, and the date range (start and end date). Ask for whatever is missing,
+one thing at a time, in a friendly way. Once you have BOTH a name and a clear start/end date, and
+you've confirmed with the CURRENT BOOKINGS list that those dates are free, respond normally to the
+person AND then add this exact line as the very last line of your reply, with real values filled in:
+
+BOOKING_READY: name=<their name>; start=<YYYY-MM-DD>; end=<YYYY-MM-DD>
+
+Only include that BOOKING_READY line when you are fully ready to book and the dates are confirmed
+free. If the dates overlap an existing booking, do not include that line -- instead tell them it's
+unavailable and ask if they'd like different dates.
+
+Keep all replies short, warm, and conversational.
 """
 
 # --- SHARED GOOGLE SHEETS CLIENT (cached so we don't re-auth or re-open every rerun) ---
@@ -145,10 +157,6 @@ def get_info_sheet():
     except gspread.WorksheetNotFound:
         ws = spreadsheet.add_worksheet(title="CabinInfo", rows=100, cols=1)
         ws.append_row(["Info"])
-        ws.append_row(["Address: [fill this in]"])
-        ws.append_row(["WiFi Network: [fill this in] / Password: [fill this in]"])
-        ws.append_row(["Check-in: [time] / Check-out: [time]"])
-        ws.append_row(["House rules: [fill this in]"])
         return ws
 
 def get_contacts_sheet():
@@ -195,6 +203,19 @@ def build_ai_context():
 
     return f"TODAY'S DATE: {today_str}\n\nCABIN INFO:\n{info_text}\n\nCURRENT BOOKINGS:\n{bookings_text}"
 
+BOOKING_PATTERN = re.compile(
+    r"BOOKING_READY:\s*name=(.+?);\s*start=(\d{4}-\d{2}-\d{2});\s*end=(\d{4}-\d{2}-\d{2})",
+    re.IGNORECASE
+)
+
+def extract_booking(reply_text):
+    match = BOOKING_PATTERN.search(reply_text)
+    if not match:
+        return None, reply_text
+    name, start, end = match.groups()
+    clean_text = BOOKING_PATTERN.sub("", reply_text).strip()
+    return (name.strip(), start.strip(), end.strip()), clean_text
+
 # --- UI LAYOUT ---
 st.markdown("""
 <div class="cabin-header">
@@ -206,15 +227,44 @@ st.markdown("""
 tab1, tab2, tab3, tab4 = st.tabs(["🤖 Assistant", "📅 Calendar", "🧺 Inventory", "📞 Contacts"])
 
 with tab1:
-    st.markdown('<div class="cabin-card">', unsafe_allow_html=True)
-    st.subheader("Need info?")
-    user_query = st.text_input("Ask about the cabin:", placeholder="e.g. Is the cabin free next weekend?")
-    if user_query:
-        with st.spinner("Thinking..."):
-            context = build_ai_context()
-            full_prompt = f"{SYSTEM_PROMPT}\n\n{context}\n\nQuestion: {user_query}"
-            st.write(model.generate_content(full_prompt).text)
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.subheader("Ask me anything, or book your stay")
+
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+    if "gemini_chat" not in st.session_state:
+        st.session_state.gemini_chat = model.start_chat(history=[])
+
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    user_input = st.chat_input("Ask a question or say 'I want to book a stay'...")
+
+    if user_input:
+        st.session_state.chat_messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.write(user_input)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                context = build_ai_context()
+                full_message = f"{SYSTEM_PROMPT}\n\n{context}\n\nUser: {user_input}"
+                response = st.session_state.gemini_chat.send_message(full_message)
+                booking, display_text = extract_booking(response.text)
+
+                if booking:
+                    name, start_str, end_str = booking
+                    start = datetime.strptime(start_str, '%Y-%m-%d').date()
+                    end = datetime.strptime(end_str, '%Y-%m-%d').date()
+
+                    if is_overlapping(start, end):
+                        display_text += "\n\n⚠️ Sorry, those dates just got booked by someone else. Want to try different dates?"
+                    else:
+                        save_to_sheet(name, start, end)
+                        display_text += f"\n\n✅ You're all set, {name}! Booked {start} to {end}."
+
+                st.write(display_text)
+                st.session_state.chat_messages.append({"role": "assistant", "content": display_text})
 
 with tab2:
     st.markdown('<div class="cabin-card">', unsafe_allow_html=True)
