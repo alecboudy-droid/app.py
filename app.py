@@ -101,9 +101,17 @@ genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 model = genai.GenerativeModel('gemini-flash-lite-latest')
 
 SYSTEM_PROMPT = """
-You are a helpful assistant for a family cabin. Only answer using the information provided below
-(general cabin info and current bookings). If something isn't covered, say you don't have that info
-and suggest asking the family directly. Keep answers short and friendly.
+You are a helpful assistant for a family cabin. Answer using the information provided below
+(today's date, general cabin info, and current bookings).
+
+For availability questions: figure out the actual calendar dates being asked about (use TODAY'S
+DATE to resolve relative terms like "this weekend" or "next Friday"), then check them against
+the CURRENT BOOKINGS list. Give a direct, short answer:
+- If the dates are free: "Yes, you're clear to go up [dates] — nobody's booked it."
+- If the dates overlap a booking: "No, [name] already has the cabin booked [dates]."
+
+For anything else not covered below, say you don't have that info and suggest asking the
+family directly. Keep answers short, direct, and friendly.
 """
 
 # --- SHARED GOOGLE SHEETS CLIENT (cached so we don't re-auth or re-open every rerun) ---
@@ -171,6 +179,8 @@ def save_to_sheet(name, start, end):
     sheet.append_row([name, str(start), str(end)])
 
 def build_ai_context():
+    today_str = datetime.today().strftime('%A, %B %d, %Y')
+
     info_rows = get_info_sheet().get_all_values()[1:]
     info_text = "\n".join(row[0] for row in info_rows if row and row[0].strip())
 
@@ -183,7 +193,7 @@ def build_ai_context():
     else:
         bookings_text = "There are currently no bookings on the calendar."
 
-    return f"CABIN INFO:\n{info_text}\n\nCURRENT BOOKINGS:\n{bookings_text}"
+    return f"TODAY'S DATE: {today_str}\n\nCABIN INFO:\n{info_text}\n\nCURRENT BOOKINGS:\n{bookings_text}"
 
 # --- UI LAYOUT ---
 st.markdown("""
