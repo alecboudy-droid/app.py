@@ -207,13 +207,30 @@ def cancel_booking(name, start_str, end_str):
             return True
     return False
 
+# --- CACHED READS (cuts down Google Sheets API calls to avoid rate limits) ---
+@st.cache_data(ttl=30)
+def read_bookings():
+    return get_bookings_sheet().get_all_values()[1:]
+
+@st.cache_data(ttl=30)
+def read_inventory():
+    return get_inventory_sheet().get_all_values()[1:]
+
+@st.cache_data(ttl=30)
+def read_contacts():
+    return get_contacts_sheet().get_all_values()[1:]
+
+@st.cache_data(ttl=30)
+def read_info():
+    return get_info_sheet().get_all_values()[1:]
+
 def build_ai_context():
     today_str = datetime.today().strftime('%A, %B %d, %Y')
 
-    info_rows = get_info_sheet().get_all_values()[1:]
+    info_rows = read_info()
     info_text = "\n".join(row[0] for row in info_rows if row and row[0].strip())
 
-    booking_rows = get_bookings_sheet().get_all_values()[1:]
+    booking_rows = read_bookings()
     if booking_rows:
         bookings_text = "\n".join(
             f"{row[0]} is booked from {row[1]} to {row[2]}"
@@ -296,12 +313,14 @@ with tab1:
                         display_text += "\n\n⚠️ Sorry, those dates just got booked by someone else. Want to try different dates?"
                     else:
                         save_to_sheet(name, start, end)
+                        read_bookings.clear()
                         display_text += f"\n\n✅ You're all set, {name}! Booked {start} to {end}."
 
                 if cancellation:
                     name, start_str, end_str = cancellation
                     found = cancel_booking(name, start_str, end_str)
                     if found:
+                        read_bookings.clear()
                         display_text += f"\n\n✅ Cancelled {name}'s stay from {start_str} to {end_str}."
                     else:
                         display_text += "\n\n⚠️ I couldn't find that exact booking to cancel — could you double check the details?"
@@ -313,7 +332,7 @@ with tab2:
     st.markdown('<div class="cabin-card">', unsafe_allow_html=True)
     st.subheader("Availability")
 
-    booking_data = get_bookings_sheet().get_all_values()[1:]
+    booking_data = read_bookings()
     booked_events = []
     for row in booking_data:
         if len(row) >= 3:
@@ -353,6 +372,7 @@ with tab2:
                 st.error("⚠️ These dates are already booked.")
             else:
                 save_to_sheet(user_name, start, end)
+                read_bookings.clear()
                 st.balloons()
                 st.success("Booking confirmed!")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -360,7 +380,7 @@ with tab2:
     st.markdown('<div class="cabin-card">', unsafe_allow_html=True)
     st.subheader("Current Bookings")
 
-    all_bookings = get_bookings_sheet().get_all_values()[1:]
+    all_bookings = read_bookings()
     if not all_bookings:
         st.write("No bookings yet.")
     else:
@@ -372,6 +392,7 @@ with tab2:
                 with bc2:
                     if st.button("❌", key=f"cancel_{i}"):
                         get_bookings_sheet().delete_rows(i + 2)
+                        read_bookings.clear()
                         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -385,12 +406,13 @@ with tab3:
     if st.button("Add Item"):
         if new_item.strip():
             inventory_sheet.append_row([new_item.strip(), str(datetime.today().date())])
+            read_inventory.clear()
             st.rerun()
         else:
             st.warning("Type something first.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    rows = inventory_sheet.get_all_values()[1:]
+    rows = read_inventory()
 
     if not rows:
         st.markdown('<div class="cabin-card">Nothing on the list right now 🎉</div>', unsafe_allow_html=True)
@@ -403,6 +425,7 @@ with tab3:
             with c2:
                 if st.button("✅", key=f"check_{i}"):
                     inventory_sheet.delete_rows(i + 2)
+                    read_inventory.clear()
                     st.rerun()
 
 with tab4:
@@ -420,12 +443,13 @@ with tab4:
     if st.button("Add Contact"):
         if new_name.strip() and new_phone.strip():
             contacts_sheet.append_row([new_name.strip(), new_phone.strip()])
+            read_contacts.clear()
             st.rerun()
         else:
             st.warning("Enter both a name and phone number.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    contact_rows = contacts_sheet.get_all_values()[1:]
+    contact_rows = read_contacts()
 
     if not contact_rows:
         st.markdown('<div class="cabin-card">No contacts added yet.</div>', unsafe_allow_html=True)
