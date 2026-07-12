@@ -234,7 +234,7 @@ with tab1:
     if "gemini_chat" not in st.session_state:
         st.session_state.gemini_chat = model.start_chat(history=[])
 
-    for msg in st.session_state.chat_messages:
+    for msg in reversed(st.session_state.chat_messages):
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
