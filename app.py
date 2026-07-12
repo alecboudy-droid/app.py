@@ -82,32 +82,31 @@ st.markdown("""
         padding: 1.2rem;
         margin-bottom: 1rem;
     }
+
+    .call-button {
+        display: block;
+        text-align: center;
+        background: #2d5a3d;
+        color: white !important;
+        padding: 0.6rem 1rem;
+        border-radius: 10px;
+        text-decoration: none;
+        font-weight: 600;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # --- SETUP ---
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+model = genai.GenerativeModel('gemini-flash-lite-latest')
 
-CABIN_INFO = """
-You are a helpful assistant for a family cabin. Only answer questions using the information below.
-If someone asks something not covered here, say you don't have that info and suggest they ask the family directly.
-
-CABIN DETAILS:
-- Address: [YOUR CABIN ADDRESS HERE]
-- WiFi Network: [WIFI NAME] / Password: [WIFI PASSWORD]
-- Check-in time: [e.g. 3:00 PM]
-- Check-out time: [e.g. 11:00 AM]
-- House rules: [e.g. no shoes inside, quiet hours after 10pm, no smoking indoors]
-- Thermostat instructions: [e.g. set to 68 in winter, don't go below 60 when away]
-- Trash day: [e.g. Tuesdays, bins are behind the shed]
-- Nearest grocery store: [name / distance]
-- Emergency contact: [name / number]
-- Anything else guests commonly ask about
+SYSTEM_PROMPT = """
+You are a helpful assistant for a family cabin. Only answer using the information provided below
+(general cabin info and current bookings). If something isn't covered, say you don't have that info
+and suggest asking the family directly. Keep answers short and friendly.
 """
 
-model = genai.GenerativeModel('gemini-flash-lite-latest', system_instruction=CABIN_INFO)
-
-# --- SHARED GOOGLE SHEETS CLIENT (cached so we don't re-auth every rerun) ---
+# --- SHARED GOOGLE SHEETS CLIENT (cached so we don't re-auth or re-open every rerun) ---
 @st.cache_resource
 def get_client():
     creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
@@ -115,16 +114,42 @@ def get_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
+@st.cache_resource
+def get_spreadsheet():
+    return get_client().open("CabinBookings")
+
 def get_bookings_sheet():
-    return get_client().open("CabinBookings").sheet1
+    return get_spreadsheet().sheet1
 
 def get_inventory_sheet():
-    spreadsheet = get_client().open("CabinBookings")
+    spreadsheet = get_spreadsheet()
     try:
         return spreadsheet.worksheet("Inventory")
     except gspread.WorksheetNotFound:
         ws = spreadsheet.add_worksheet(title="Inventory", rows=100, cols=2)
         ws.append_row(["Item", "Added"])
+        return ws
+
+def get_info_sheet():
+    spreadsheet = get_spreadsheet()
+    try:
+        return spreadsheet.worksheet("CabinInfo")
+    except gspread.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="CabinInfo", rows=100, cols=1)
+        ws.append_row(["Info"])
+        ws.append_row(["Address: [fill this in]"])
+        ws.append_row(["WiFi Network: [fill this in] / Password: [fill this in]"])
+        ws.append_row(["Check-in: [time] / Check-out: [time]"])
+        ws.append_row(["House rules: [fill this in]"])
+        return ws
+
+def get_contacts_sheet():
+    spreadsheet = get_spreadsheet()
+    try:
+        return spreadsheet.worksheet("Contacts")
+    except gspread.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="Contacts", rows=100, cols=2)
+        ws.append_row(["Name", "Phone"])
         return ws
 
 def clear_dates():
@@ -145,6 +170,21 @@ def save_to_sheet(name, start, end):
     sheet = get_bookings_sheet()
     sheet.append_row([name, str(start), str(end)])
 
+def build_ai_context():
+    info_rows = get_info_sheet().get_all_values()[1:]
+    info_text = "\n".join(row[0] for row in info_rows if row and row[0].strip())
+
+    booking_rows = get_bookings_sheet().get_all_values()[1:]
+    if booking_rows:
+        bookings_text = "\n".join(
+            f"{row[0]} is booked from {row[1]} to {row[2]}"
+            for row in booking_rows if len(row) >= 3
+        )
+    else:
+        bookings_text = "There are currently no bookings on the calendar."
+
+    return f"CABIN INFO:\n{info_text}\n\nCURRENT BOOKINGS:\n{bookings_text}"
+
 # --- UI LAYOUT ---
 st.markdown("""
 <div class="cabin-header">
@@ -153,15 +193,17 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["🤖 Assistant", "📅 Calendar", "🧺 Inventory"])
+tab1, tab2, tab3, tab4 = st.tabs(["🤖 Assistant", "📅 Calendar", "🧺 Inventory", "📞 Contacts"])
 
 with tab1:
     st.markdown('<div class="cabin-card">', unsafe_allow_html=True)
     st.subheader("Need info?")
-    user_query = st.text_input("Ask about the cabin:", placeholder="e.g. What's the wifi password?")
+    user_query = st.text_input("Ask about the cabin:", placeholder="e.g. Is the cabin free next weekend?")
     if user_query:
         with st.spinner("Thinking..."):
-            st.write(model.generate_content(user_query).text)
+            context = build_ai_context()
+            full_prompt = f"{SYSTEM_PROMPT}\n\n{context}\n\nQuestion: {user_query}"
+            st.write(model.generate_content(full_prompt).text)
     st.markdown('</div>', unsafe_allow_html=True)
 
 with tab2:
@@ -241,3 +283,39 @@ with tab3:
                 if st.button("✅", key=f"check_{i}"):
                     inventory_sheet.delete_rows(i + 2)
                     st.rerun()
+
+with tab4:
+    st.markdown('<div class="cabin-card">', unsafe_allow_html=True)
+    st.subheader("Add a Contact")
+
+    contacts_sheet = get_contacts_sheet()
+
+    c1, c2 = st.columns(2)
+    with c1:
+        new_name = st.text_input("Name:", key="new_contact_name", placeholder="e.g. Mom")
+    with c2:
+        new_phone = st.text_input("Phone:", key="new_contact_phone", placeholder="e.g. 6125551234")
+
+    if st.button("Add Contact"):
+        if new_name.strip() and new_phone.strip():
+            contacts_sheet.append_row([new_name.strip(), new_phone.strip()])
+            st.rerun()
+        else:
+            st.warning("Enter both a name and phone number.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    contact_rows = contacts_sheet.get_all_values()[1:]
+
+    if not contact_rows:
+        st.markdown('<div class="cabin-card">No contacts added yet.</div>', unsafe_allow_html=True)
+    else:
+        for row in contact_rows:
+            if len(row) >= 2:
+                name, phone = row[0], row[1]
+                clean_phone = "".join(ch for ch in phone if ch.isdigit() or ch == "+")
+                st.markdown(f"""
+                <div class="cabin-card">
+                    <strong>{name}</strong><br>
+                    <a class="call-button" href="tel:{clean_phone}">📞 Call {name}</a>
+                </div>
+                """, unsafe_allow_html=True)
